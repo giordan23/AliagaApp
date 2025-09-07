@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="UTF-8"?><sqlb_project><db path="aliaga.db" readonly="0" foreign_keys="1" case_sensitive_like="0" temp_store="0" wal_autocheckpoint="1000" synchronous="2"/><attached/><window><main_tabs open="structure browser pragmas query" current="3"/></window><tab_structure><column_width id="0" width="300"/><column_width id="1" width="0"/><column_width id="2" width="100"/><column_width id="3" width="176"/><column_width id="4" width="0"/><expanded_item id="0" parent="1"/><expanded_item id="1" parent="1"/><expanded_item id="2" parent="1"/><expanded_item id="3" parent="1"/></tab_structure><tab_browse><table title=".Browsables" custom_title="0" dock_id="1" table="0,10:Browsables"/><dock_state state="000000ff00000000fd00000001000000020000000000000000fc0100000001fb000000160064006f0063006b00420072006f00770073006500310100000000ffffffff0000011e00ffffff000000000000000000000004000000040000000800000008fc00000000"/><default_encoding codec=""/><browse_table_settings/></tab_browse><tab_sql><sql name="SQL 1*">-- Crear tabla USUARIO
+CREATE TABLE USUARIO (
+    id_usuario INTEGER PRIMARY KEY AUTOINCREMENT,
+    nombre TEXT NOT NULL,
+    rol TEXT NOT NULL,
+    activo BOOLEAN NOT NULL DEFAULT 1
+);
+
+-- Crear tabla CAJA
+CREATE TABLE CAJA (
+    id_caja INTEGER PRIMARY KEY AUTOINCREMENT,
+    nombre TEXT NOT NULL,
+    saldo_actual DECIMAL(10,2) DEFAULT 0,
+    estado BOOLEAN NOT NULL DEFAULT 1
+);
+
+-- Crear tabla CAJA_CHICA
+CREATE TABLE CAJA_CHICA (
+    id_caja_chica INTEGER PRIMARY KEY AUTOINCREMENT,
+    id_caja INTEGER NOT NULL,
+    monto_maximo DECIMAL(10,2) NOT NULL,
+    saldo_actual DECIMAL(10,2) DEFAULT 0,
+    estado BOOLEAN NOT NULL DEFAULT 1,
+    FOREIGN KEY (id_caja) REFERENCES CAJA(id_caja)
+);
+
+-- Crear tabla CLIENTE
+CREATE TABLE CLIENTE (
+    id_cliente INTEGER PRIMARY KEY AUTOINCREMENT,
+    nombre TEXT NOT NULL,
+    documento TEXT,
+    telefono TEXT,
+    zona TEXT,
+    estado BOOLEAN NOT NULL DEFAULT 1
+);
+
+-- Crear tabla PRODUCTO
+CREATE TABLE PRODUCTO (
+    id_producto INTEGER PRIMARY KEY AUTOINCREMENT,
+    nombre_producto TEXT NOT NULL,
+    calidad TEXT NOT NULL,
+    precio_compra DECIMAL(10,2) NOT NULL
+);
+
+-- Crear tabla TIPO_MOVIMIENTO
+CREATE TABLE TIPO_MOVIMIENTO (
+    id_tipo_movimiento INTEGER PRIMARY KEY AUTOINCREMENT,
+    nombre TEXT NOT NULL,
+    naturaleza TEXT NOT NULL CHECK (naturaleza IN ('INGRESO', 'EGRESO'))
+);
+
+-- Crear tabla ADELANTO
+CREATE TABLE ADELANTO (
+    id_adelanto INTEGER PRIMARY KEY AUTOINCREMENT,
+    id_cliente INTEGER NOT NULL,
+    monto_total DECIMAL(10,2) NOT NULL,
+    monto_pendiente DECIMAL(10,2) NOT NULL,
+    estado TEXT NOT NULL DEFAULT 'PENDIENTE' CHECK (estado IN ('PENDIENTE', 'PAGADO')),
+    fecha_adelanto TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    fecha_limite TIMESTAMP,
+    FOREIGN KEY (id_cliente) REFERENCES CLIENTE(id_cliente)
+);
+
+-- Crear tabla MOVIMIENTO_CAJA
+CREATE TABLE MOVIMIENTO_CAJA (
+    id_movimiento INTEGER PRIMARY KEY AUTOINCREMENT,
+    id_caja INTEGER NOT NULL,
+    id_tipo_movimiento INTEGER NOT NULL,
+    id_usuario INTEGER NOT NULL,
+    id_cliente INTEGER NOT NULL,
+    id_adelanto INTEGER,
+    monto_total DECIMAL(10,2) DEFAULT 0,
+    referencia TEXT,
+    fecha_hora TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (id_caja) REFERENCES CAJA(id_caja),
+    FOREIGN KEY (id_tipo_movimiento) REFERENCES TIPO_MOVIMIENTO(id_tipo_movimiento),
+    FOREIGN KEY (id_usuario) REFERENCES USUARIO(id_usuario),
+    FOREIGN KEY (id_cliente) REFERENCES CLIENTE(id_cliente),
+    FOREIGN KEY (id_adelanto) REFERENCES ADELANTO(id_adelanto)
+);
+
+CREATE TABLE DETALLE_MOVIMIENTO (
+    id_detalle INTEGER PRIMARY KEY AUTOINCREMENT,
+    id_movimiento INTEGER NOT NULL,
+    id_producto INTEGER NOT NULL,
+    peso_kg DECIMAL(10,2) NOT NULL,
+    descuento_kg DECIMAL(10,2) DEFAULT 0,
+    peso_final_kg DECIMAL(10,2),
+    precio_aplicado DECIMAL(10,2) NOT NULL,
+    subtotal DECIMAL(10,2),
+    FOREIGN KEY (id_movimiento) REFERENCES MOVIMIENTO_CAJA(id_movimiento),
+    FOREIGN KEY (id_producto) REFERENCES PRODUCTO(id_producto)
+);
+
+-- Crear tabla APERTURA_CIERRE
+CREATE TABLE APERTURA_CIERRE (
+    id_apertura_cierre INTEGER PRIMARY KEY AUTOINCREMENT,
+    id_caja INTEGER NOT NULL,
+    id_usuario INTEGER NOT NULL,
+    monto_apertura DECIMAL(10,2) NOT NULL,
+    monto_cierre DECIMAL(10,2),
+    diferencia DECIMAL(10,2),
+    fecha_apertura TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    fecha_cierre TIMESTAMP,
+    observaciones TEXT,
+    FOREIGN KEY (id_caja) REFERENCES CAJA(id_caja),
+    FOREIGN KEY (id_usuario) REFERENCES USUARIO(id_usuario)
+);
+
+CREATE TRIGGER calcular_subtotal_peso 
+BEFORE INSERT ON DETALLE_MOVIMIENTO
+BEGIN
+    SELECT 
+        RAISE(ROLLBACK, 'El peso final no puede ser negativo')
+    WHERE (NEW.peso_kg - COALESCE(NEW.descuento_kg, 0)) &lt; 0;
+    
+    UPDATE DETALLE_MOVIMIENTO 
+    SET peso_final_kg = NEW.peso_kg - COALESCE(NEW.descuento_kg, 0)
+    WHERE id_detalle = NEW.id_detalle;
+    
+    UPDATE DETALLE_MOVIMIENTO 
+    SET subtotal = peso_final_kg * NEW.precio_aplicado
+    WHERE id_detalle = NEW.id_detalle;
+END;
+
+-- Trigger para actualizar monto_total en MOVIMIENTO_CAJA
+CREATE TRIGGER actualizar_monto_total 
+AFTER INSERT ON DETALLE_MOVIMIENTO
+BEGIN
+    UPDATE MOVIMIENTO_CAJA 
+    SET monto_total = (
+        SELECT SUM(subtotal) 
+        FROM DETALLE_MOVIMIENTO 
+        WHERE id_movimiento = NEW.id_movimiento
+    )
+    WHERE id_movimiento = NEW.id_movimiento;
+END;
+
+-- Trigger para actualizar saldo de caja
+CREATE TRIGGER actualizar_saldo_caja 
+AFTER INSERT ON MOVIMIENTO_CAJA
+BEGIN
+    UPDATE CAJA SET saldo_actual = (
+        CASE 
+            WHEN (SELECT naturaleza FROM TIPO_MOVIMIENTO 
+                  WHERE id_tipo_movimiento = NEW.id_tipo_movimiento) = 'INGRESO'
+            THEN saldo_actual + NEW.monto_total
+            ELSE saldo_actual - NEW.monto_total
+        END
+    )
+    WHERE id_caja = NEW.id_caja;
+END;
+
+-- Trigger para actualizar adelanto cuando se registra un pago
+CREATE TRIGGER actualizar_adelanto 
+AFTER INSERT ON MOVIMIENTO_CAJA
+WHEN NEW.id_adelanto IS NOT NULL
+BEGIN
+    UPDATE ADELANTO SET 
+    monto_pendiente = monto_pendiente - NEW.monto_total,
+    estado = CASE 
+        WHEN monto_pendiente - NEW.monto_total &lt;= 0 THEN 'PAGADO'
+        ELSE 'PENDIENTE'
+    END
+    WHERE id_adelanto = NEW.izd_adelanto;
+END;
+
+</sql><current_tab id="0"/></tab_sql></sqlb_project>
